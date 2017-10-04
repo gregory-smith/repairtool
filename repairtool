@@ -142,7 +142,6 @@ def execute_tasks(f,tasks):
             executed+=1
             # execute task
             tasks['tasks'][task]['start_time']=int(time.time())
-            time.sleep(1)
             command="ssh %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
                                                                     tasks['tasks'][task]['node'],
                                                                     tasks['config']['nodetool_command'],
