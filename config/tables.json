@@ -1,0 +1,14 @@
+{
+  "config": {
+    "repair_time": 10,
+    "pace_type": "fixed",
+    "pace_factor": 1.0,
+    "keyspace": "OpsCenter",
+    "ssh_user": "ubuntu",
+    "nodetool_command": "/usr/share/dse-4.8.14/resources/cassandra/bin/nodetool "
+  },
+  "tables": [
+    "rollups60 rollups7200 rollup_state",
+    "events"
+  ]
+}

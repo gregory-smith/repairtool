@@ -1,0 +1,202 @@
+#!/usr/bin/python -u
+#
+# Utility to run sub-range repairs on a cluster.
+# Arguments :
+# <config> - list of tables and config options in a json formatted file
+# <ring> - output of nodetool ring command
+# < tasklist> location of a repair tasklist to load/write current state of repairs
+
+# Author Greg Smith  2017
+
+import os
+import re
+import sys
+import json
+import time
+
+# some variables and dicts
+ring = sys.argv[1]
+conf = sys.argv[2]
+tasklist = sys.argv[3]
+
+config={}
+tasks={}
+topology={}
+
+
+# some functions
+def load_json(f,data):
+    if os.path.isfile(f):
+        conf=file(f,'r')
+        data=json.load(conf)
+    return data
+
+def save_json(f,data):
+    jsonfile=open(f,'w')
+    json.dump(data, jsonfile, sort_keys=False, indent=4)
+    jsonfile.close()
+    return 0
+
+def parse_ring(f,topology):
+    previous_token=0
+    first_token=0
+
+    if os.path.isfile(f):
+        print "Reading topology : %s" % (f)
+        for line in open(f,'r'):
+            if re.search("Normal",line):
+                # Only interested in nodes in a Normal state.
+                elements=line.split()
+                node=elements[0]
+                token=int(elements[7])
+                if first_token == 0:
+                    first_token = token
+                topology[token]={}
+                topology[token]['end']=token
+                topology[token]['start']=previous_token
+                topology[token]['node']=node
+                #previous token is the start of the next token range
+                previous_token=token
+        # fix up the first token range, which starts at the last token
+        topology[first_token]['start']=token
+        return topology
+
+def generate_tasks(config,topology,tasks):
+    taskid=0
+    print "INFO Creating task list"
+    print "INFO Table sets : %s" % (len(config['tables']))
+    print "INFO Token Ranges : %s" % (len(topology))
+    tasks['config']={}
+    tasks['tasks']={}
+    tasks['config']['start_time']=0
+    tasks['config']['keyspace']=config['config']['keyspace']
+    tasks['config']['repair_time']=config['config']['repair_time']
+    tasks['config']['keyspace']=config['config']['keyspace']
+    tasks['config']['pace_type']=config['config']['pace_type']
+    tasks['config']['pace_factor']=config['config']['pace_factor']
+    tasks['config']['ssh_user']=config['config']['ssh_user']
+    tasks['config']['nodetool_command']=config['config']['nodetool_command']
+    for table in config['tables']:
+        for tr in topology:
+            taskid+=1
+            tasks['tasks'][taskid]={}
+            tasks['tasks'][taskid]['tables']=table
+            tasks['tasks'][taskid]['node']=topology[tr]['node']
+            tasks['tasks'][taskid]['start_token']=topology[tr]['start']
+            tasks['tasks'][taskid]['end_token']=topology[tr]['end']
+            tasks['tasks'][taskid]['start_time']=0
+            tasks['tasks'][taskid]['end_time']=0
+            tasks['tasks'][taskid]['status']='Not Started'
+    print "INFO Generated %s tasks" % (taskid)
+    return tasks
+
+def check_progress(tasks):
+    tasks_remaining=0
+    tasks_completed=0
+
+    for task in tasks['tasks']:
+        if tasks['tasks'][task]['status']=='Not Started':
+            tasks_remaining+=1
+        else:
+            tasks_completed+=1
+
+    task_pct=float(100*tasks_completed/(tasks_remaining+tasks_completed))
+    time_pct=float(100*(time.time()-tasks['config']['start_time'])/(3600*24*tasks['config']['repair_time']))
+    print "INFO Checking progress at %s" % (time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
+    print "INFO Repair cycle started : %s" % (time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tasks['config']['start_time'])))
+    print "INFO Repair Task percentage complete : %s " % (task_pct)
+    print "INFO Repair Task percentage time used : %s " % (time_pct)
+    if tasks['config']['pace_type']=="Dynamic":
+        if float(task_pct/time_pct)>2.0:
+            tasks['config']['pace_factor']=tasks['config']['pace_factor']*1.5
+            print "INFO Dynamic pacing enabled, Reducing speed of repairs (%s)" % (tasks['config']['pace_factor'])
+        if float(task_pct/time_pct)<0.5:
+            tasks['config']['pace_factor']=tasks['config']['pace_factor']*0.75
+            print "INFO Dynamic pacing enabled, Increasing speed of repairs (%s)" % (tasks['config']['pace_factor'])
+    if tasks_remaining==0:
+        print "INFO Repair cycle completed : %s" % (time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())))
+        tasks['config']['start_time']=int(time.time())
+        for task in tasks['tasks']:
+            tasks['tasks'][task]['status']='Not Started'
+
+    return tasks
+
+    #print time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tasks[task]['start_time']))
+    #print time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tasks[task]['end_time']))
+
+def execute_tasks(f,tasks):
+    executed=0
+    save_time=time.time()
+    check_interval=int(len(tasks['tasks'])/100) # check progress every 1% of tasks complete.
+
+    print "INFO Repair time : %s Days (Total Tasks : %s )" % (tasks['config']['repair_time'], len(tasks['tasks']))
+    print "INFO Commencing repair cycle in 20 seconds"
+    time.sleep(20)
+    if tasks['config']['start_time']==0:
+        tasks['config']['start_time']=int(time.time())
+
+
+    tasks=check_progress(tasks)    # Report on state before we begin
+    for task in tasks['tasks']:
+        if tasks['tasks'][task]['status']=='Not Started':
+            executed+=1
+            # execute task
+            tasks['tasks'][task]['start_time']=int(time.time())
+            time.sleep(1)
+            command="ssh %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
+                                                                    tasks['tasks'][task]['node'],
+                                                                    tasks['config']['nodetool_command'],
+                                                                    tasks['config']['keyspace'],
+                                                                    tasks['tasks'][task]['tables'],
+                                                                    tasks['tasks'][task]['start_token'],
+                                                                    tasks['tasks'][task]['end_token'])
+            rc=os.system(command)
+            if rc !=0:
+                print "WARN repair command (%s) failed" % (command)
+            tasks['tasks'][task]['end_time']=int(time.time())
+            tasks['tasks'][task]['status']='Completed'
+
+            # Wait a variable amount of time
+            pause_time=int(tasks['config']['pace_factor']*(tasks['tasks'][task]['end_time']-tasks['tasks'][task]['start_time']))
+            if pause_time > 1800:
+                pause_time=1800
+            if pause_time < 2:
+                pause_time=2
+            print "DEBUG  Pausing for %s secs" % (pause_time)
+            time.sleep(pause_time)
+
+            if (int(executed) % check_interval) ==0: # Periodically (every 1% of tasks executed) check on progress
+                tasks=check_progress(tasks)
+
+        if time.time()-save_time>300: # Save state of task list every 5 minutes
+            print "DEBUG : Saving task list : %s " % (f)
+            save_time=time.time()
+            save_json(f,tasks)
+
+    tasks=check_progress(tasks) # Final output and reset task list
+    save_json(f,tasks) # Save it
+
+    return 0
+
+# parse config and topology
+if os.path.isfile(conf):
+    print "INFO Parsing configuration options"
+    config=load_json(conf,config)
+else:
+    print "WARN Cannot read configuration file"
+    exit
+
+# load task list
+if os.path.isfile(tasklist):
+    print "INFO Reading tasklist for repairs"
+    tasks=load_json(tasklist,tasks)
+else:
+    print "INFO Reading Cluster topology"
+    topology=parse_ring(ring,topology)
+    print "INFO Generating NEW repair tasklist"
+    tasks=generate_tasks(config,topology,tasks)
+    save_json(tasklist,tasks)
+
+while True:
+    print "INFO Executing repairs using task list : %s" % (tasklist)
+    execute_tasks(tasklist,tasks)
