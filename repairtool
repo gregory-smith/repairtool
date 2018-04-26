@@ -2,26 +2,42 @@
 #
 # Utility to run sub-range repairs on a cluster.
 # Arguments :
+# repairtool generate <ring> <config> <tasklist names>
 # <config> - list of tables and config options in a json formatted file
 # <ring> - output of nodetool ring command
-# < tasklist> location of a repair tasklist to load/write current state of repairs
+# < tasklist_names> file root of location of a repair tasklist_names
+#
+# repairtool execute <tasklist>
+# < tasklist> one of the task lists generated from the command above
 
 # Author Greg Smith  2017
-
 import os
 import re
 import sys
 import json
 import time
+import datetime
+from random import *
+
+# check the Arguments
+if sys.argv[1]=="generate":
+    ring = sys.argv[2]
+    conf = sys.argv[3]
+    tasklist = sys.argv[4]
+elif sys.argv[1]=="execute":
+    tasklist = sys.argv[2]
+else:
+    exit
 
 # some variables and dicts
-ring = sys.argv[1]
-conf = sys.argv[2]
-tasklist = sys.argv[3]
-
 config={}
 tasks={}
 topology={}
+tokens={}
+
+max_pause = 1800 # Maximum pause between repairs in seconds
+min_pause = 2 # minimum pause between repairs
+save_interval = 300 # how often to save the current state of the repair
 
 
 # some functions
@@ -32,10 +48,24 @@ def load_json(f,data):
     return data
 
 def save_json(f,data):
+    print "Saving file : %s" % (f)
     jsonfile=open(f,'w')
     json.dump(data, jsonfile, sort_keys=False, indent=4)
     jsonfile.close()
     return 0
+
+def check_window(start,end):
+    sleeping=True
+    print "DEBUG: Waiting for repair window - Start %s End %s" % (start.time(),end.time())
+    while sleeping:
+        t_now=datetime.datetime.now()
+        if t_now.time() < start.time() and t_now.time() > end.time():
+            #print "DEBUG: Out of Window : Pausing repairs ...."
+            sleeping=True
+            time.sleep(60)
+        else:
+            print "DEBUG: In window, continuing to run repairs ...."
+            sleeping=False
 
 def parse_ring(f,topology):
     previous_token=0
@@ -49,44 +79,69 @@ def parse_ring(f,topology):
                 elements=line.split()
                 node=elements[0]
                 token=int(elements[7])
-                if first_token == 0:
-                    first_token = token
-                topology[token]={}
-                topology[token]['end']=token
-                topology[token]['start']=previous_token
-                topology[token]['node']=node
-                #previous token is the start of the next token range
-                previous_token=token
+                tokens[token]={}
+                tokens[token]['end']=token
+                tokens[token]['node']=node
+
+        for tk in sorted(tokens.keys()):
+            if first_token==0:
+                first_token=tk
+            topology[tk]={}
+            topology[tk]['start']=previous_token
+            topology[tk]['end']=tk
+            topology[tk]['node']=tokens[tk]['node']
+            previous_token=tk
+
         # fix up the first token range, which starts at the last token
-        topology[first_token]['start']=token
+        topology[first_token]['start']=tk
         return topology
 
 def generate_tasks(config,topology,tasks):
     taskid=0
     print "INFO Creating task list"
     print "INFO Table sets : %s" % (len(config['tables']))
+    print "INFO Full keyspace repair : %s" % (config['config']['full_keyspace'])
+    print "INFO Threads : %s" % (config['config']['repair_threads'])
     print "INFO Token Ranges : %s" % (len(topology))
-    tasks['config']={}
-    tasks['tasks']={}
-    tasks['config']['start_time']=0
-    tasks['config']['keyspace']=config['config']['keyspace']
-    tasks['config']['repair_time']=config['config']['repair_time']
-    tasks['config']['keyspace']=config['config']['keyspace']
-    tasks['config']['pace_type']=config['config']['pace_type']
-    tasks['config']['pace_factor']=config['config']['pace_factor']
-    tasks['config']['ssh_user']=config['config']['ssh_user']
-    tasks['config']['nodetool_command']=config['config']['nodetool_command']
-    for table in config['tables']:
+    for tid in range(0,config['config']['repair_threads']):
+        tasks[tid]={}
+        tasks[tid]['config']={}
+        tasks[tid]['tasks']={}
+        tasks[tid]['config']['start_time']=0
+        tasks[tid]['config']['keyspace']=config['config']['keyspace']
+        tasks[tid]['config']['repair_time']=config['config']['repair_time']
+        tasks[tid]['config']['full_keyspace']=config['config']['full_keyspace']
+        tasks[tid]['config']['start_window']=config['config']['start_window']
+        tasks[tid]['config']['end_window']=config['config']['end_window']
+        tasks[tid]['config']['pace_type']=config['config']['pace_type']
+        tasks[tid]['config']['pace_factor']=config['config']['pace_factor']
+        tasks[tid]['config']['ssh_user']=config['config']['ssh_user']
+        tasks[tid]['config']['nodetool_command']=config['config']['nodetool_command']
+
+    if config['config']['full_keyspace']:
         for tr in topology:
             taskid+=1
-            tasks['tasks'][taskid]={}
-            tasks['tasks'][taskid]['tables']=table
-            tasks['tasks'][taskid]['node']=topology[tr]['node']
-            tasks['tasks'][taskid]['start_token']=topology[tr]['start']
-            tasks['tasks'][taskid]['end_token']=topology[tr]['end']
-            tasks['tasks'][taskid]['start_time']=0
-            tasks['tasks'][taskid]['end_time']=0
-            tasks['tasks'][taskid]['status']='Not Started'
+            tid=randint(0,config['config']['repair_threads']-1)
+            tasks[tid]['tasks'][taskid]={}
+            tasks[tid]['tasks'][taskid]['node']=topology[tr]['node']
+            tasks[tid]['tasks'][taskid]['start_token']=topology[tr]['start']
+            tasks[tid]['tasks'][taskid]['end_token']=topology[tr]['end']
+            tasks[tid]['tasks'][taskid]['start_time']=0
+            tasks[tid]['tasks'][taskid]['end_time']=0
+            tasks[tid]['tasks'][taskid]['status']='Not Started'
+    else:
+        for table in config['tables']:
+            for tr in topology:
+                taskid+=1
+                tid=randint(1,config['config']['repair_threads'])
+                tasks[tid]['tasks'][taskid]={}
+                tasks[tid]['tasks'][taskid]['tables']=table
+                tasks[tid]['tasks'][taskid]['node']=topology[tr]['node']
+                tasks[tid]['tasks'][taskid]['start_token']=topology[tr]['start']
+                tasks[tid]['tasks'][taskid]['end_token']=topology[tr]['end']
+                tasks[tid]['tasks'][taskid]['start_time']=0
+                tasks[tid]['tasks'][taskid]['end_time']=0
+                tasks[tid]['tasks'][taskid]['status']='Not Started'
     print "INFO Generated %s tasks" % (taskid)
     return tasks
 
@@ -127,7 +182,9 @@ def check_progress(tasks):
 def execute_tasks(f,tasks):
     executed=0
     save_time=time.time()
-    check_interval=int(len(tasks['tasks'])/100) # check progress every 1% of tasks complete.
+    check_interval=int(len(tasks['tasks'])/100) # check progress every 1% of tasks complete
+    if check_interval <10:
+        check_interval=10 # or every 10 tasks
 
     print "INFO Repair time : %s Days (Total Tasks : %s )" % (tasks['config']['repair_time'], len(tasks['tasks']))
     print "INFO Commencing repair cycle in 20 seconds"
@@ -135,67 +192,85 @@ def execute_tasks(f,tasks):
     if tasks['config']['start_time']==0:
         tasks['config']['start_time']=int(time.time())
 
-
     tasks=check_progress(tasks)    # Report on state before we begin
     for task in tasks['tasks']:
         if tasks['tasks'][task]['status']=='Not Started':
             executed+=1
             # execute task
             tasks['tasks'][task]['start_time']=int(time.time())
-            command="ssh %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
+            if 'tables' in tasks['tasks'][task]:
+                command="ssh -n %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
                                                                     tasks['tasks'][task]['node'],
                                                                     tasks['config']['nodetool_command'],
                                                                     tasks['config']['keyspace'],
                                                                     tasks['tasks'][task]['tables'],
                                                                     tasks['tasks'][task]['start_token'],
                                                                     tasks['tasks'][task]['end_token'])
+            else:
+                command="ssh -n %s@%s %s repair %s -st %s -et %s" % (tasks['config']['ssh_user'],
+                                                                    tasks['tasks'][task]['node'],
+                                                                    tasks['config']['nodetool_command'],
+                                                                    tasks['config']['keyspace'],
+                                                                    tasks['tasks'][task]['start_token'],
+                                                                    tasks['tasks'][task]['end_token'])
+
             rc=os.system(command)
-            if rc !=0:
-                print "WARN repair command (%s) failed" % (command)
             tasks['tasks'][task]['end_time']=int(time.time())
-            tasks['tasks'][task]['status']='Completed'
+            if rc !=0:
+                print "WARN repair command (%s) failed, will retry later.." % (command)
+            else:
+                tasks['tasks'][task]['status']='Completed'
 
             # Wait a variable amount of time
             pause_time=int(tasks['config']['pace_factor']*(tasks['tasks'][task]['end_time']-tasks['tasks'][task]['start_time']))
-            if pause_time > 1800:
-                pause_time=1800
-            if pause_time < 2:
-                pause_time=2
+            if pause_time > max_pause:
+                pause_time=max_pause
+            if pause_time < min_pause:
+                pause_time=min_pause
             print "DEBUG  Pausing for %s secs" % (pause_time)
             time.sleep(pause_time)
 
             if (int(executed) % check_interval) ==0: # Periodically (every 1% of tasks executed) check on progress
                 tasks=check_progress(tasks)
 
-        if time.time()-save_time>300: # Save state of task list every 5 minutes
+        if time.time()-save_time>save_interval: # Save state of task list and check repair window periodically
             print "DEBUG : Saving task list : %s " % (f)
             save_time=time.time()
             save_json(f,tasks)
+            # some variables and dicts
+            t_start=datetime.datetime.strptime(tasks['config']['start_window'],'%H:%M')
+            t_end=datetime.datetime.strptime(tasks['config']['end_window'],'%H:%M')
+            check_window(t_start,t_end)
+
+
+
 
     tasks=check_progress(tasks) # Final output and reset task list
     save_json(f,tasks) # Save it
-
     return 0
 
-# parse config and topology
-if os.path.isfile(conf):
-    print "INFO Parsing configuration options"
-    config=load_json(conf,config)
-else:
-    print "WARN Cannot read configuration file"
-    exit
 
 # load task list
-if os.path.isfile(tasklist):
-    print "INFO Reading tasklist for repairs"
-    tasks=load_json(tasklist,tasks)
-else:
+if sys.argv[1]=="execute":
+    if os.path.isfile(tasklist):
+        print "INFO Reading tasklist for repairs"
+        tasks=load_json(tasklist,tasks)
+        while True:
+            print "INFO Executing repairs using task list : %s" % (tasklist)
+            execute_tasks(tasklist,tasks)
+
+if sys.argv[1]=="generate":
+# parse config and topology
+    if os.path.isfile(conf):
+        print "INFO Parsing configuration options"
+        config=load_json(conf,config)
+    else:
+        print "WARN Cannot read configuration file"
+        exit
+
     print "INFO Reading Cluster topology"
     topology=parse_ring(ring,topology)
     print "INFO Generating NEW repair tasklist"
     tasks=generate_tasks(config,topology,tasks)
-    save_json(tasklist,tasks)
-
-while True:
-    print "INFO Executing repairs using task list : %s" % (tasklist)
-    execute_tasks(tasklist,tasks)
+    for tid in range(0,config['config']['repair_threads']):
+        save_json(tasklist+str(tid),tasks[tid])

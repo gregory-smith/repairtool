@@ -1,13 +1,13 @@
 {
   "config": {
     "repair_time": 10,
-    "start_window": "17:00",
+    "start_window": "18:00",
     "end_window":"08:00",
-    "repair_threads":1,
-    "pace_type": "Dynamic",
+    "repair_threads":10,
+    "pace_type": "fixed",
     "pace_factor": 1.0,
-    "keyspace": "OpsCenter",
-    "full_keyspace": false,
+    "keyspace": "keyspace1",
+    "full_keyspace": true,
     "ssh_user": " ubuntu",
     "nodetool_command": "/usr/share/dse-5.0.11/resources/cassandra/bin/nodetool "
   },
