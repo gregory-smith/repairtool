@@ -67,6 +67,13 @@ def check_window(start,end):
             print "DEBUG: In window, continuing to run repairs ...."
             sleeping=False
 
+def num_tasks_remaining(tasks):
+    remaining = 0
+    for task in tasks['tasks']:
+        if tasks['tasks'][task]['status']=='Not Started':
+            remaining += 1
+    return remaining
+
 def parse_ring(f,topology):
     previous_token=0
     first_token=0
@@ -181,6 +188,7 @@ def check_progress(tasks):
 
 def execute_tasks(f,tasks):
     executed=0
+    initial_tasks_remaining = num_tasks_remaining(tasks)
     save_time=time.time()
     check_interval=int(len(tasks['tasks'])/100) # check progress every 1% of tasks complete
     if check_interval <10:
@@ -230,10 +238,12 @@ def execute_tasks(f,tasks):
             print "DEBUG  Pausing for %s secs" % (pause_time)
             time.sleep(pause_time)
 
-            if (int(executed) % check_interval) ==0: # Periodically (every 1% of tasks executed) check on progress
+            tasks_remaining = initial_tasks_remaining - executed
+            print "Executed: {}, Remaining: {}".format( executed, tasks_remaining )
+            if (int(executed) % check_interval) ==0 or tasks_remaining == 0: # Periodically (every 1% of tasks executed) check on progress
                 tasks=check_progress(tasks)
 
-        if time.time()-save_time>save_interval: # Save state of task list and check repair window periodically
+        if time.time()-save_time>save_interval or tasks_remaining == 0: # Save state of task list and check repair window periodically
             print "DEBUG : Saving task list : %s " % (f)
             save_time=time.time()
             save_json(f,tasks)
@@ -255,9 +265,8 @@ if sys.argv[1]=="execute":
     if os.path.isfile(tasklist):
         print "INFO Reading tasklist for repairs"
         tasks=load_json(tasklist,tasks)
-        while True:
-            print "INFO Executing repairs using task list : %s" % (tasklist)
-            execute_tasks(tasklist,tasks)
+        print "INFO Executing repairs using task list : %s" % (tasklist)
+        execute_tasks(tasklist,tasks)
 
 if sys.argv[1]=="generate":
 # parse config and topology
