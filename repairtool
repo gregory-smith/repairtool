@@ -199,7 +199,7 @@ def execute_tasks(f,tasks):
             # execute task
             tasks['tasks'][task]['start_time']=int(time.time())
             if 'tables' in tasks['tasks'][task]:
-                command="ssh -n %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
+                command="ssh -oStrictHostKeyChecking=no -n %s@%s %s repair %s %s -st %s -et %s" % (tasks['config']['ssh_user'],
                                                                     tasks['tasks'][task]['node'],
                                                                     tasks['config']['nodetool_command'],
                                                                     tasks['config']['keyspace'],
@@ -207,7 +207,7 @@ def execute_tasks(f,tasks):
                                                                     tasks['tasks'][task]['start_token'],
                                                                     tasks['tasks'][task]['end_token'])
             else:
-                command="ssh -n %s@%s %s repair %s -st %s -et %s" % (tasks['config']['ssh_user'],
+                command="ssh -oStrictHostKeyChecking=no -n %s@%s %s repair %s -st %s -et %s" % (tasks['config']['ssh_user'],
                                                                     tasks['tasks'][task]['node'],
                                                                     tasks['config']['nodetool_command'],
                                                                     tasks['config']['keyspace'],
